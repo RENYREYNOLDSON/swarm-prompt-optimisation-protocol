@@ -500,24 +500,6 @@ async def execute_prompt(
     )
 
 
-async def gather_runs_concurrently(
-    client: anthropic.AsyncAnthropic,
-    system_text: str,
-    user_template: str,
-    json_schema: dict[str, Any],
-    datasets: list[tuple[int, str, str]],  # (idx, dataset_id, content)
-    on_complete,  # async callable: (idx, dataset_id, RunResult | Exception) -> None
-) -> None:
-    async def one(idx: int, dataset_id: str, content: str) -> None:
-        try:
-            result = await execute_prompt(
-                client, system_text, user_template, content, json_schema
-            )
-            await on_complete(idx, dataset_id, result)
-        except Exception as e:  # noqa: BLE001
-            await on_complete(idx, dataset_id, e)
-
-
 # --------------------------------------------------------------------------- #
 # Anthropic Batch API — used by the deploy-friendly stateless runner
 # --------------------------------------------------------------------------- #
@@ -751,5 +733,3 @@ async def collect_batch_results(
                 )
             )
     return out
-
-    await asyncio.gather(*(one(i, did, c) for i, did, c in datasets))

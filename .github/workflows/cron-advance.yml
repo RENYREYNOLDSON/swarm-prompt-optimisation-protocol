@@ -1,0 +1,31 @@
+name: Advance generation jobs
+
+on:
+  schedule:
+    # Every 5 minutes — GitHub's minimum interval on free runners.
+    # GitHub may queue/skip ticks during peak load; treat this as best-effort.
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # allow manual trigger from the Actions tab
+
+concurrency:
+  group: cron-advance
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/_cron/advance
+        env:
+          CRON_URL: ${{ secrets.CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "Missing CRON_URL or CRON_SECRET repo secrets" >&2
+            exit 1
+          fi
+          # -f makes curl exit non-zero on HTTP >=400 so workflow fails visibly
+          # --max-time guards against the function hanging
+          curl -fsS --max-time 90 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${CRON_URL}"
