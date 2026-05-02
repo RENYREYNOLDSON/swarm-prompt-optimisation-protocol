@@ -132,7 +132,11 @@ FieldType = Literal[
 ]
 
 
-class FieldDef(BaseModel):
+# Non-recursive shape for nested fields. Anthropic's output_config.format
+# rejects $ref / mutually-recursive Pydantic models, so we cap the schema's
+# nesting at one level deep with explicit Depth-0 / Depth-1 classes.
+class FieldDefDepth1(BaseModel):
+    """A leaf or single-level-nested field (no further nesting allowed)."""
     name: str = Field(description="snake_case field name.")
     description: str = Field(description="What this field captures.")
     type: FieldType
@@ -143,18 +147,37 @@ class FieldDef(BaseModel):
     )
     array_item_type: FieldType | None = Field(
         default=None,
-        description="Item type when type is 'array'.",
+        description="Item type when type is 'array'. For nested objects, "
+        "use type='object' on the parent instead.",
     )
-    nested_fields: list["FieldDef"] | None = Field(
+
+
+class FieldDef(BaseModel):
+    """Top-level field. Can hold nested fields one level deep."""
+    name: str = Field(description="snake_case field name.")
+    description: str = Field(description="What this field captures.")
+    type: FieldType
+    required: bool = True
+    enum_values: list[str] | None = Field(
+        default=None,
+        description="Allowed values when type is 'string_enum'.",
+    )
+    array_item_type: FieldType | None = Field(
+        default=None,
+        description=(
+            "Item type when type is 'array'. Use 'object' to indicate an "
+            "array of nested objects (then populate `nested_fields` with the "
+            "object's properties)."
+        ),
+    )
+    nested_fields: list[FieldDefDepth1] | None = Field(
         default=None,
         description=(
             "Nested fields when type is 'object', or when type is 'array' "
-            "and array_item_type is 'object'."
+            "with array_item_type='object'. Each nested field must be a leaf "
+            "(no further nesting)."
         ),
     )
-
-
-FieldDef.model_rebuild()
 
 
 class GeneratedSchema(BaseModel):
@@ -197,16 +220,48 @@ class GeneratedPrompt(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
-def _field_to_json_schema(f: FieldDef) -> dict[str, Any]:
-    """Convert one FieldDef to a JSON Schema fragment."""
+def _leaf_to_json_schema(f: FieldDefDepth1) -> dict[str, Any]:
+    """Convert a leaf (non-nested) field to JSON Schema."""
     if f.type == "string_enum":
-        node: dict[str, Any] = {
+        return {
             "type": "string",
             "description": f.description,
             "enum": f.enum_values or [],
         }
-    elif f.type == "object":
-        node = {
+    if f.type == "array":
+        item_type = f.array_item_type or "string"
+        # Leaves can't have nested object items.
+        if item_type == "object":
+            return {
+                "type": "array",
+                "description": f.description,
+                "items": {"type": "object", "additionalProperties": True},
+            }
+        return {
+            "type": "array",
+            "description": f.description,
+            "items": {"type": item_type},
+        }
+    if f.type == "object":
+        # Leaf object with no nested_fields → free-form.
+        return {
+            "type": "object",
+            "description": f.description,
+            "additionalProperties": True,
+        }
+    return {"type": f.type, "description": f.description}
+
+
+def _field_to_json_schema(f: FieldDef) -> dict[str, Any]:
+    """Convert a top-level FieldDef to a JSON Schema fragment."""
+    if f.type == "string_enum":
+        return {
+            "type": "string",
+            "description": f.description,
+            "enum": f.enum_values or [],
+        }
+    if f.type == "object":
+        node: dict[str, Any] = {
             "type": "object",
             "description": f.description,
             "properties": {},
@@ -214,10 +269,11 @@ def _field_to_json_schema(f: FieldDef) -> dict[str, Any]:
             "additionalProperties": False,
         }
         for sub in f.nested_fields or []:
-            node["properties"][sub.name] = _field_to_json_schema(sub)
+            node["properties"][sub.name] = _leaf_to_json_schema(sub)
             if sub.required:
                 node["required"].append(sub.name)
-    elif f.type == "array":
+        return node
+    if f.type == "array":
         item_type = f.array_item_type or "string"
         if item_type == "object":
             items: dict[str, Any] = {
@@ -227,15 +283,13 @@ def _field_to_json_schema(f: FieldDef) -> dict[str, Any]:
                 "additionalProperties": False,
             }
             for sub in f.nested_fields or []:
-                items["properties"][sub.name] = _field_to_json_schema(sub)
+                items["properties"][sub.name] = _leaf_to_json_schema(sub)
                 if sub.required:
                     items["required"].append(sub.name)
         else:
             items = {"type": item_type}
-        node = {"type": "array", "description": f.description, "items": items}
-    else:
-        node = {"type": f.type, "description": f.description}
-    return node
+        return {"type": "array", "description": f.description, "items": items}
+    return {"type": f.type, "description": f.description}
 
 
 def schema_to_json_schema(schema: GeneratedSchema) -> dict[str, Any]:

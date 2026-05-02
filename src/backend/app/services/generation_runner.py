@@ -65,6 +65,10 @@ log.setLevel(logging.INFO)
 
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+# Hard cap on resubmits per batch step to prevent credit drain. After this
+# many attempts, the job is failed with the latest item-level error.
+MAX_BATCH_RESUBMITS = 1
 IN_FLIGHT_STATUSES = {
     "queued",
     "planning",
@@ -94,6 +98,8 @@ class JobRow:
     prompt_id: UUID | None
     datasets_done: int
     runs_done: int
+    dataset_attempts: int
+    run_attempts: int
     error: str | None
     error_step: str | None
     started_at: datetime
@@ -105,6 +111,7 @@ JOB_SELECT = """
     id, project_id, status, archetype, instances,
     dataset_batch_id, run_batch_id, prompt_id,
     datasets_done, runs_done,
+    dataset_attempts, run_attempts,
     error, error_step,
     started_at, updated_at, completed_at
 """
@@ -122,6 +129,8 @@ def _row_to_job(r: dict[str, Any]) -> JobRow:
         prompt_id=r["prompt_id"],
         datasets_done=r["datasets_done"],
         runs_done=r["runs_done"],
+        dataset_attempts=r["dataset_attempts"],
+        run_attempts=r["run_attempts"],
         error=r["error"],
         error_step=r["error_step"],
         started_at=r["started_at"],
@@ -528,12 +537,16 @@ async def _step(
         return
 
     if job.status == "submitting_datasets":
-        # Submit only the indices we don't already have.
         already = _existing_dataset_indices(conn, project_id)
         missing = [i for i in range(1, DATASET_COUNT + 1) if i not in already]
         if not missing:
             _set_status(conn, job.id, "writing_schema")
             return
+        if job.dataset_attempts > MAX_BATCH_RESUBMITS:
+            raise RuntimeError(
+                f"dataset batch retry budget exhausted "
+                f"(attempts={job.dataset_attempts}, still missing={missing})"
+            )
         meta = _project_meta(conn, project_id)
         batch_id = await submit_dataset_batch(
             client,
@@ -546,6 +559,7 @@ async def _step(
         _update(
             conn, job.id,
             dataset_batch_id=batch_id,
+            dataset_attempts=job.dataset_attempts + 1,
             status="awaiting_datasets",
         )
         return
@@ -642,13 +656,17 @@ async def _step(
 
     if job.status == "submitting_runs":
         assert job.prompt_id is not None, "prompt should exist by now"
-        # Submit only datasets that don't yet have a successful run.
         already = _existing_run_dataset_idxs(conn, project_id, job.prompt_id)
         ds_rows = _datasets_full(conn, project_id)
         missing = [r for r in ds_rows if r["idx"] not in already]
         if not missing:
             _mark_completed(conn, job.id, project_id)
             return
+        if job.run_attempts > MAX_BATCH_RESUBMITS:
+            raise RuntimeError(
+                f"run batch retry budget exhausted "
+                f"(attempts={job.run_attempts}, still missing={len(missing)})"
+            )
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT system_text, user_template, output_schema "
@@ -668,6 +686,7 @@ async def _step(
         _update(
             conn, job.id,
             run_batch_id=batch_id,
+            run_attempts=job.run_attempts + 1,
             status="awaiting_runs",
         )
         return
