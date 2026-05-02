@@ -14,6 +14,12 @@ requirements.txt        # Root requirements (used by Vercel @vercel/python)
 
 ## Local development
 
+Install dev deps (includes uvicorn; not shipped to Vercel):
+
+```
+.venv/bin/pip install -r src/backend/requirements-dev.txt
+```
+
 One-shot: build the frontend and run the backend (serves the built UI + API on :8000):
 
 ```
