@@ -442,40 +442,6 @@ async def generate_prompt(
 
 
 # --------------------------------------------------------------------------- #
-# Orchestration helper used by the streaming endpoint
-# --------------------------------------------------------------------------- #
-
-
-async def gather_datasets_concurrently(
-    client: anthropic.AsyncAnthropic,
-    domain: str,
-    archetype: str,
-    instances: list[str],
-    on_start,  # async callable: (idx, instance) -> None — fires before the API call
-    on_complete,  # async callable: (idx, dataset) -> None — fires after each finishes
-    difficulty: int = 5,
-) -> list[GeneratedDataset]:
-    """Run all DATASET_COUNT generations in parallel via asyncio.gather over
-    AsyncAnthropic — each HTTP request flies out before any of the others
-    finish. `on_start` fires for every dataset before its API call so a
-    streaming UI can show the parallel kickoff.
-
-    All datasets share the same archetype so the corpus is homogeneous."""
-    results: list[GeneratedDataset | None] = [None] * DATASET_COUNT
-
-    async def one(i: int, instance: str) -> None:
-        await on_start(i + 1, instance)
-        ds = await generate_dataset(
-            client, domain, archetype, instance, i + 1, difficulty
-        )
-        results[i] = ds
-        await on_complete(i + 1, ds)
-
-    await asyncio.gather(*(one(i, t) for i, t in enumerate(instances)))
-    return [r for r in results if r is not None]
-
-
-# --------------------------------------------------------------------------- #
 # Run the structured prompt against each dataset
 # --------------------------------------------------------------------------- #
 
