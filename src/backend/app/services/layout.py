@@ -19,7 +19,6 @@ import os
 from typing import Any
 
 import numpy as np
-from sklearn.decomposition import PCA
 
 logger = logging.getLogger("spop.layout")
 
@@ -111,9 +110,14 @@ def project_pca_2d(embeddings: list[list[float]]) -> list[tuple[float, float]]:
         diff = arr[1] - arr[0]
         scale = float(np.linalg.norm(diff)) or 1.0
         return [(-1.0, 0.0), (1.0, 0.0)] if scale else [(0.0, 0.0), (0.0, 0.0)]
+    # PCA via numpy SVD on the mean-centred matrix. Equivalent to
+    # sklearn.decomposition.PCA(n_components=2).fit_transform — top-k
+    # principal axes are the first k rows of Vt.
+    centered = arr - arr.mean(axis=0)
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
     n_components = min(2, arr.shape[1])
-    pca = PCA(n_components=n_components, svd_solver="auto")
-    coords = pca.fit_transform(arr)
+    components = vt[:n_components]  # (n_components, d)
+    coords = centered @ components.T  # (n, n_components)
     if coords.shape[1] == 1:
         coords = np.hstack([coords, np.zeros((n, 1))])
     # Normalise per-axis to [-1, 1].

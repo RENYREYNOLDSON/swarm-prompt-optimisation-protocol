@@ -56,6 +56,14 @@ Inspired by ant colony optimisation, particle swarm optimisation, fish schooling
 
 ---
 
+## Images
+#### Intention would be live visualisation too
+<img src="src/frontend/public/Screenshot 2026-05-02 at 16.13.19.png" alt="SPOP landing page" width="900" />
+
+#### New swarm run page
+<img src="src/frontend/public/Screenshot 2026-05-02 at 16.13.11.png" alt="SPOP landing page" width="900" />
+
+
 ## Repo layout
 
 ```
