@@ -25,3 +25,6 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.local.example
+.vercel
+.env*.local
