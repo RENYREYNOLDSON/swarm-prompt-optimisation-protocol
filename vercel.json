@@ -4,7 +4,8 @@
   "functions": {
     "api/index.py": {
       "runtime": "@vercel/python@5.0.10",
-      "maxDuration": 60
+      "maxDuration": 60,
+      "excludeFiles": "{**/__pycache__/**,**/*.pyc,**/*.pyo,**/*.pyi,**/tests/**,**/test/**,**/testing/**,**/docs/**,**/doc/**,**/examples/**,**/*.md,**/*.txt,**/LICENSE*,**/*.dist-info/RECORD,**/*.dist-info/WHEEL,**/*.dist-info/INSTALLER,numpy/_core/include/**,numpy/_core/lib/**,numpy/_pyinstaller/**,numpy/distutils/**,numpy/f2py/**,numpy/typing/**,pydantic/v1/**,httpx/_main.py,anthropic/lib/streaming/**.pyi,**/.so.dwarf,**/*.h,**/*.hpp,**/*.c,**/*.cpp,**/*.cmake,**/CMakeLists.txt,**/.dylib.dwarf}"
     }
   },
   "rewrites": [

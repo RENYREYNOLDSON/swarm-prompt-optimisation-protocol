@@ -6,4 +6,5 @@ alembic==1.14.0
 pyjwt[crypto]==2.10.1
 httpx==0.28.1
 numpy>=2.3,<3
-voyageai>=0.3.2,<1
+# voyageai is optional — layout.py falls back to a deterministic hash embedding
+# when it's not installed. Re-add to requirements if/when you set VOYAGE_API_KEY.

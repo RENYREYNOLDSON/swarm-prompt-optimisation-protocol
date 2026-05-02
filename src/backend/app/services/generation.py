@@ -25,7 +25,7 @@ SCHEMA_MODEL = "claude-opus-4-7"
 PROMPT_MODEL = "claude-opus-4-7"
 RUN_MODEL = "claude-sonnet-4-6"
 
-DATASET_COUNT = 10
+DATASET_COUNT = 4
 
 
 # --------------------------------------------------------------------------- #
