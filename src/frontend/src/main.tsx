@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import { ClerkProvider } from '@clerk/clerk-react'
 import './index.css'
 import App from './App.tsx'
+import { ThemeProvider } from '@/components/theme-provider'
 
 const PUBLISHABLE_KEY = import.meta.env.NEXT_PUBLIC_SWARM_AUTH_CLERK_PUBLISHABLE_KEY
 
@@ -11,26 +12,29 @@ const root = createRoot(document.getElementById('root')!)
 
 if (!PUBLISHABLE_KEY) {
   root.render(
-    <main style={{ fontFamily: 'system-ui', maxWidth: 640, margin: '4rem auto', padding: '0 1.25rem' }}>
-      <h1>Configuration needed</h1>
-      <p>
-        <code>NEXT_PUBLIC_SWARM_AUTH_CLERK_PUBLISHABLE_KEY</code> is not set.
-      </p>
-      <p>
-        Add it to <code>src/frontend/.env.local</code> for local dev, and to your
-        Vercel project's Environment Variables for deployments. Restart the dev
-        server after editing <code>.env.local</code>.
-      </p>
-    </main>,
+    <ThemeProvider defaultTheme="dark">
+      <main className="min-h-svh flex items-center justify-center px-6">
+        <div className="max-w-md text-center space-y-3">
+          <h1 className="text-2xl font-semibold">Configuration needed</h1>
+          <p className="text-sm text-muted-foreground">
+            <code className="font-mono">NEXT_PUBLIC_SWARM_AUTH_CLERK_PUBLISHABLE_KEY</code>{' '}
+            is not set. Add it to <code className="font-mono">.env.local</code>{' '}
+            and restart the dev server.
+          </p>
+        </div>
+      </main>
+    </ThemeProvider>,
   )
 } else {
   root.render(
     <StrictMode>
-      <ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
-      </ClerkProvider>
+      <ThemeProvider defaultTheme="dark">
+        <ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </ClerkProvider>
+      </ThemeProvider>
     </StrictMode>,
   )
 }

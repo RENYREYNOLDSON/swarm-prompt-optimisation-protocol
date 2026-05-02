@@ -1,7 +1,19 @@
 {
   "buildCommand": "cd src/frontend && npm install && npm run build",
   "outputDirectory": "src/frontend/dist",
+  "functions": {
+    "api/index.py": {
+      "runtime": "@vercel/python@5.0.10",
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index" }
+  ],
+  "crons": [
+    {
+      "path": "/api/_cron/advance",
+      "schedule": "* * * * *"
+    }
   ]
 }

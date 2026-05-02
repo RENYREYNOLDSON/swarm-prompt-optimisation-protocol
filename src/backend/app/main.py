@@ -1,20 +1,39 @@
+import os
 from pathlib import Path
 
-import anthropic
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from app.env import load_dotenv
+
+load_dotenv()
+
+import anthropic  # noqa: E402
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
+
+from app.routers import chat, generation, projects, swarm  # noqa: E402
 
 app = FastAPI(title="SPOP API", version="0.1.0")
 
+
+def _allowed_origins() -> list[str]:
+    raw = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173")
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["authorization", "content-type"],
 )
+
+app.include_router(projects.router)
+app.include_router(generation.router)
+app.include_router(generation.cron_router)
+app.include_router(chat.router)
+app.include_router(swarm.router)
 
 
 class StructuredPrompt(BaseModel):
@@ -84,4 +103,19 @@ def optimise(req: OptimiseRequest) -> OptimiseResponse:
 
 _frontend_dist = Path(__file__).resolve().parents[3] / "src" / "frontend" / "dist"
 if _frontend_dist.is_dir():
-    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")
+    _dist_root = _frontend_dist.resolve()
+    _index_html = _dist_root / "index.html"
+
+    @app.get("/{full_path:path}")
+    async def spa(full_path: str) -> FileResponse:
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404)
+        if full_path:
+            candidate = (_dist_root / full_path).resolve()
+            try:
+                candidate.relative_to(_dist_root)
+            except ValueError:
+                raise HTTPException(status_code=404) from None
+            if candidate.is_file():
+                return FileResponse(candidate)
+        return FileResponse(_index_html)
