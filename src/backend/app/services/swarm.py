@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import time
 from dataclasses import dataclass
@@ -35,6 +36,8 @@ from app.services.generation import (
 from app.services.layout import embed_prompt, project_pca_2d
 from app.services.scoring import score_against_gold
 from app.services.swarm_broker import broker
+
+logger = logging.getLogger("spop.swarm")
 
 
 # --------------------------------------------------------------------------- #
@@ -506,13 +509,31 @@ async def _run_one_turn(
         )
     test_id, _test_idx, test_content, test_gold = test
 
+    turn_started = time.monotonic()
+    logger.info(
+        "turn_started run=%s turn=%s K=%d pool_size=%d",
+        run_id, turn, cfg.num_agents, len(pool),
+    )
     await broker.publish(run_id, {"type": "turn_started", "turn": turn})
 
     parents = [_select_parent(pool, cfg.randomness) for _ in range(cfg.num_agents)]
+    parents_with_score = sum(1 for p in parents if p is not None)
+    logger.debug(
+        "turn=%s parents_chosen=%d/%d (%.0f%% had a parent)",
+        turn, parents_with_score, cfg.num_agents,
+        100 * parents_with_score / max(cfg.num_agents, 1),
+    )
 
     async def one_agent(agent_idx: int, parent: PoolEntry | None) -> None:
+        agent_started = time.monotonic()
         attempt_id = _insert_pending_attempt(
             run_id, turn, agent_idx, parent.id if parent else None
+        )
+        logger.info(
+            "agent_started run=%s turn=%s agent=%d parent=%s parent_score=%s",
+            run_id, turn, agent_idx,
+            str(parent.id) if parent else "—",
+            f"{parent.score:.3f}" if parent else "—",
         )
         await broker.publish(
             run_id,
@@ -537,6 +558,7 @@ async def _run_one_turn(
                 {"type": "agent_progress", "turn": turn, "agent_idx": agent_idx, "phase": "drafting"},
             )
 
+            draft_started = time.monotonic()
             cand = await draft_candidate_prompt(
                 client,
                 model=cfg.model,
@@ -545,6 +567,12 @@ async def _run_one_turn(
                 json_schema=json_schema,
                 parent=parent,
                 randomness=cfg.randomness,
+            )
+            logger.info(
+                "agent_drafted run=%s turn=%s agent=%d draft_ms=%d sys_chars=%d user_chars=%d",
+                run_id, turn, agent_idx,
+                int((time.monotonic() - draft_started) * 1000),
+                len(cand.system_text or ""), len(cand.user_template or ""),
             )
 
             await broker.publish(
@@ -578,6 +606,12 @@ async def _run_one_turn(
 
             embedding = await embed_prompt(cand.system_text, cand.user_template)
             pheromone = cfg.pheromone_strength * score
+            logger.info(
+                "agent_scored run=%s turn=%s agent=%d score=%.3f phero=%.3f exec_ms=%d total_ms=%d",
+                run_id, turn, agent_idx, score, pheromone,
+                run_result.latency_ms,
+                int((time.monotonic() - agent_started) * 1000),
+            )
 
             _store_attempt_result(
                 attempt_id,
@@ -606,6 +640,10 @@ async def _run_one_turn(
             )
         except Exception as e:  # noqa: BLE001
             err = f"{type(e).__name__}: {e}"
+            logger.exception(
+                "agent_failed run=%s turn=%s agent=%d err=%s",
+                run_id, turn, agent_idx, err,
+            )
             _store_attempt_failure(attempt_id, err)
             await broker.publish(
                 run_id,
@@ -623,6 +661,7 @@ async def _run_one_turn(
     rho = max(EVAPORATION_MIN, min(EVAPORATION_MAX, 1.0 - cfg.pheromone_strength))
     _evaporate(run_id, rho)
     _bump_turn(run_id, turn)
+    logger.debug("evaporated run=%s turn=%s rho=%.3f", run_id, turn, rho)
 
     # Layout: project all embeddings to 2D and emit the new coordinates.
     embeds = _all_attempt_embeddings(run_id)
@@ -630,6 +669,7 @@ async def _run_one_turn(
         coords = project_pca_2d([v for _, v in embeds])
         triples = [(aid, x, y) for (aid, _), (x, y) in zip(embeds, coords)]
         _persist_layout(triples)
+        logger.debug("layout updated run=%s turn=%s n_points=%d", run_id, turn, len(triples))
         await broker.publish(
             run_id,
             {
@@ -641,6 +681,10 @@ async def _run_one_turn(
 
     best = _maybe_update_best(run_id)
     if best is not None:
+        logger.info(
+            "best_updated run=%s turn=%s attempt=%s score=%.3f",
+            run_id, turn, best[0], best[1],
+        )
         attempt_row = _load_attempt_with_xy(best[0])
         if attempt_row is not None:
             await broker.publish(
@@ -671,6 +715,14 @@ async def _run_one_turn(
         )
         best_row = cur.fetchone()
 
+    mean = sum(scores) / len(scores) if scores else 0.0
+    mx = max(scores) if scores else 0.0
+    logger.info(
+        "turn_complete run=%s turn=%s n=%d mean=%.3f max=%.3f best=%s elapsed_ms=%d",
+        run_id, turn, len(scores), mean, mx,
+        f"{best_row['best_score']:.3f}" if best_row and best_row["best_score"] is not None else "—",
+        int((time.monotonic() - turn_started) * 1000),
+    )
     await broker.publish(
         run_id,
         {
@@ -686,9 +738,16 @@ async def _run_one_turn(
 async def _run_loop(run_id: UUID) -> None:
     """Top-level loop. Exits when the run's status flips out of 'running'."""
     client = anthropic.AsyncAnthropic()
+    loop_started = time.monotonic()
+    turns_run = 0
+    logger.info("run_loop start run=%s", run_id)
     try:
         project_id, cfg, current_turn = _load_run(run_id)
         datasets, json_schema = _load_project_assets(project_id)
+        logger.info(
+            "run_loop loaded run=%s project=%s cfg=%s starting_turn=%d datasets=%d",
+            run_id, project_id, cfg, current_turn + 1, len(datasets),
+        )
         while _get_run_status(run_id) == "running":
             pool = _load_pool(run_id)
             current_turn += 1
@@ -696,16 +755,27 @@ async def _run_loop(run_id: UUID) -> None:
                 await _run_one_turn(
                     client, run_id, current_turn, cfg, pool, datasets, json_schema
                 )
+                turns_run += 1
             except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "run_loop turn_failed run=%s turn=%s err=%s",
+                    run_id, current_turn, e,
+                )
                 _set_run_status(run_id, "failed", str(e))
                 await broker.publish(run_id, {"type": "error", "message": str(e)})
                 return
             # Polite yield to let pause requests be observed.
             await asyncio.sleep(0)
         # Either paused or stopped externally.
-        if _get_run_status(run_id) == "paused":
+        final_status = _get_run_status(run_id)
+        logger.info(
+            "run_loop exit run=%s final_status=%s turns_run=%d elapsed_s=%.1f",
+            run_id, final_status, turns_run,
+            time.monotonic() - loop_started,
+        )
+        if final_status == "paused":
             await broker.publish(run_id, {"type": "paused"})
-        elif _get_run_status(run_id) == "completed":
+        elif final_status == "completed":
             await broker.publish(run_id, {"type": "completed"})
     finally:
         _running_tasks.pop(run_id, None)
@@ -714,10 +784,13 @@ async def _run_loop(run_id: UUID) -> None:
 def start_run(run_id: UUID) -> bool:
     """Start (or resume) a run. Idempotent — returns False if already running."""
     if is_running(run_id):
+        logger.info("start_run skip run=%s (already running)", run_id)
         return False
     status = _get_run_status(run_id)
     if status not in ("idle", "paused", "failed"):
+        logger.info("start_run skip run=%s (status=%s not startable)", run_id, status)
         return False
+    logger.info("start_run run=%s prev_status=%s", run_id, status)
     _set_run_status(run_id, "running", None)
     task = asyncio.create_task(_run_loop(run_id))
     _running_tasks[run_id] = task
@@ -726,6 +799,7 @@ def start_run(run_id: UUID) -> bool:
 
 async def request_pause(run_id: UUID) -> None:
     """Flip status to paused; the loop observes between turns and exits."""
+    logger.info("pause_requested run=%s", run_id)
     _set_run_status(run_id, "paused")
     # The running task will publish 'paused' itself when it observes the change.
 

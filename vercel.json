@@ -9,11 +9,5 @@
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index" }
-  ],
-  "crons": [
-    {
-      "path": "/api/_cron/advance",
-      "schedule": "* * * * *"
-    }
   ]
 }

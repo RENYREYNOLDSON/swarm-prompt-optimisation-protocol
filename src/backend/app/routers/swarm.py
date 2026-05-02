@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -18,6 +19,8 @@ from app.auth import CurrentUser
 from app.db import db_conn
 from app.services import swarm as swarm_service
 from app.services.swarm_broker import broker
+
+logger = logging.getLogger("spop.swarm.router")
 
 router = APIRouter(prefix="/api/projects", tags=["swarm"])
 
@@ -131,6 +134,11 @@ def create_run(
         )
         row = cur.fetchone()
     conn.commit()
+    logger.info(
+        "create_run project=%s run=%s K=%d model=%s ε=%.2f Q=%.2f thought=%s",
+        project_id, row["id"], body.num_agents, body.model,
+        body.randomness, body.pheromone_strength, body.thought_level,
+    )
     return SwarmRunSummary(**row)
 
 
@@ -222,7 +230,11 @@ def start_run(
 ) -> dict[str, Any]:
     _ensure_run_owner(conn, project_id, run_id, user_id)
     started = swarm_service.start_run(run_id)
-    return {"started": started, "status": swarm_service._get_run_status(run_id)}
+    new_status = swarm_service._get_run_status(run_id)
+    logger.info(
+        "POST start run=%s started=%s status=%s", run_id, started, new_status
+    )
+    return {"started": started, "status": new_status}
 
 
 @router.post("/{project_id}/swarm-runs/{run_id}/pause")
@@ -234,7 +246,9 @@ async def pause_run(
 ) -> dict[str, Any]:
     _ensure_run_owner(conn, project_id, run_id, user_id)
     await swarm_service.request_pause(run_id)
-    return {"status": swarm_service._get_run_status(run_id)}
+    new_status = swarm_service._get_run_status(run_id)
+    logger.info("POST pause run=%s status=%s", run_id, new_status)
+    return {"status": new_status}
 
 
 @router.delete(
@@ -273,19 +287,32 @@ async def stream(
     _ensure_run_owner(conn, project_id, run_id, user_id)
 
     queue = broker.subscribe(run_id)
+    logger.info("stream open run=%s", run_id)
+    events_sent = 0
 
     async def gen():
+        nonlocal events_sent
         try:
             # Send initial snapshot so the UI has full state without an
             # extra REST call.
             snap = swarm_service.snapshot(run_id)
             yield _ndjson(snap)
+            events_sent += 1
             while True:
                 event = await queue.get()
                 if event is None:
                     break
+                events_sent += 1
                 yield _ndjson(event)
+        except asyncio.CancelledError:
+            logger.info(
+                "stream cancelled run=%s events_sent=%d", run_id, events_sent
+            )
+            raise
         finally:
             broker.unsubscribe(run_id, queue)
+            logger.info(
+                "stream closed run=%s events_sent=%d", run_id, events_sent
+            )
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")

@@ -1,9 +1,31 @@
+import logging
 import os
 from pathlib import Path
 
 from app.env import load_dotenv
 
 load_dotenv()
+
+
+def _configure_logging() -> None:
+    """Set up root logging once. Level driven by LOG_LEVEL env (default INFO).
+
+    Quiets noisy third-party loggers and gives our app loggers a consistent
+    `time | level | name | message` format that's easy to grep in Vercel logs.
+    """
+    level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # Tame third-party chatter unless we're in DEBUG.
+    if level != "DEBUG":
+        for name in ("httpx", "httpcore", "anthropic", "urllib3", "psycopg.pool"):
+            logging.getLogger(name).setLevel(logging.WARNING)
+
+
+_configure_logging()
 
 import anthropic  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
@@ -12,6 +34,9 @@ from fastapi.responses import FileResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from app.routers import chat, generation, projects, swarm  # noqa: E402
+
+logger = logging.getLogger("spop.main")
+logger.info("starting SPOP API · LOG_LEVEL=%s", os.environ.get("LOG_LEVEL", "INFO"))
 
 app = FastAPI(title="SPOP API", version="0.1.0")
 

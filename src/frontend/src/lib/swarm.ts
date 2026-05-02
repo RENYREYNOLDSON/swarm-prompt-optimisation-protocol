@@ -1,5 +1,7 @@
 // Swarm-run REST + NDJSON live event consumer.
 
+import { debugError, debugLog, debugWarn } from '@/lib/debug'
+
 export type SwarmType = 'aco' | 'pso' | 'abc' | 'firefly'
 export type RunModel =
   | 'claude-opus-4-7'
@@ -156,11 +158,13 @@ async function authedJson<T>(
   init: RequestInit,
   getToken: TokenGetter,
 ): Promise<T> {
+  const started = performance.now()
   const token = await getToken()
   const headers = new Headers(init.headers)
   if (init.body !== undefined) headers.set('content-type', 'application/json')
   if (token) headers.set('authorization', `Bearer ${token}`)
 
+  debugLog('swarm', `${init.method ?? 'GET'} ${path}`)
   const res = await fetch(path, { ...init, headers })
   if (!res.ok) {
     let detail = res.statusText
@@ -170,8 +174,13 @@ async function authedJson<T>(
     } catch {
       /* ignore */
     }
+    debugError('swarm', `${init.method ?? 'GET'} ${path} → ${res.status} ${detail}`)
     throw new Error(detail)
   }
+  debugLog(
+    'swarm',
+    `${init.method ?? 'GET'} ${path} → ${res.status} (${(performance.now() - started).toFixed(0)}ms)`,
+  )
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }
@@ -293,6 +302,7 @@ export async function* streamSwarm(
   signal?: AbortSignal,
 ): AsyncGenerator<SwarmEvent> {
   const token = await getToken()
+  debugLog('swarm.stream', `connecting run=${runId}`)
   const res = await fetch(
     `/api/projects/${projectId}/swarm-runs/${runId}/stream`,
     {
@@ -311,10 +321,26 @@ export async function* streamSwarm(
     } catch {
       /* ignore */
     }
+    debugError('swarm.stream', `connect failed run=${runId}`, res.status, detail)
     throw new Error(detail)
   }
+  debugLog('swarm.stream', `open run=${runId}`)
   const reader = res.body.getReader()
-  for await (const ev of readNdjson(reader)) {
-    yield ev as SwarmEvent
+  let count = 0
+  try {
+    for await (const ev of readNdjson(reader)) {
+      count += 1
+      const e = ev as SwarmEvent
+      debugLog('swarm.stream', `event #${count} run=${runId} type=${e.type}`, e)
+      yield e
+    }
+    debugLog('swarm.stream', `eof run=${runId} events=${count}`)
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') {
+      debugLog('swarm.stream', `aborted run=${runId} events=${count}`)
+    } else {
+      debugWarn('swarm.stream', `errored run=${runId} events=${count}`, e)
+    }
+    throw e
   }
 }

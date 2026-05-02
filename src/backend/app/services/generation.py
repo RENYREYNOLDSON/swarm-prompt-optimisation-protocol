@@ -517,7 +517,6 @@ async def execute_prompt(
             "format": {
                 "type": "json_schema",
                 "schema": json_schema,
-                "name": "extraction",
             }
         },
     )
@@ -588,8 +587,9 @@ def _dataset_request_params(
     idx: int,
     difficulty: int,
 ) -> dict[str, Any]:
-    """Messages-API params for one dataset generation. Shape is reused by both
-    the live `generate_dataset` path and the Batch API submission."""
+    """Messages-API params for one dataset generation, used both directly and
+    via the Batch API. Uses `output_config.format` for schema-enforced JSON
+    output; only `{type, schema}` is allowed (no `name`)."""
     p = difficulty_profile(difficulty)
     return {
         "model": DATASET_MODEL,
@@ -597,10 +597,9 @@ def _dataset_request_params(
         "system": (
             "You produce realistic, substantive sample documents for a "
             "structured-extraction testbed. Documents must read like real "
-            "artifacts — not summaries, not meta-descriptions. CRITICAL: "
-            "documents in a corpus share a single archetype — same format, "
-            "same section structure, same conventions — varying only in "
-            "the specific subject matter."
+            "artifacts — not summaries, not meta-descriptions. Documents in "
+            "a corpus share a single archetype — same format, same section "
+            "structure, varying only in subject matter."
         ),
         "messages": [
             {
@@ -617,12 +616,9 @@ def _dataset_request_params(
                     "documents in this corpus. Vary only the actual subject "
                     "matter and specific details. "
                     f"Length: roughly {p['word_lo']}–{p['word_hi']} words. "
-                    "Use natural structure for the archetype (headings, "
-                    "bullets, tables in markdown where appropriate). At low "
-                    "difficulty, keep facts explicit and well-organised; at "
-                    "high difficulty, weave in ambiguity, implicit cues, "
-                    "partial or conflicting information. Do NOT include "
-                    "meta-commentary."
+                    "At low difficulty, keep facts explicit and well-"
+                    "organised; at high difficulty, weave in ambiguity, "
+                    "implicit cues, partial or conflicting information."
                 ),
             }
         ],
@@ -630,7 +626,6 @@ def _dataset_request_params(
             "format": {
                 "type": "json_schema",
                 "schema": DATASET_JSON_SCHEMA,
-                "name": "dataset",
             }
         },
     }
@@ -642,6 +637,7 @@ def _run_request_params(
     document: str,
     json_schema: dict[str, Any],
 ) -> dict[str, Any]:
+    """Messages-API params for one extraction run."""
     return {
         "model": RUN_MODEL,
         "max_tokens": 8000,
@@ -656,7 +652,6 @@ def _run_request_params(
             "format": {
                 "type": "json_schema",
                 "schema": json_schema,
-                "name": "extraction",
             }
         },
     }
@@ -722,6 +717,17 @@ class BatchItemResult:
     error: str | None
 
 
+def _strip_code_fences(text: str) -> str:
+    """Strip ```json ... ``` or ``` ... ``` wrappers if present."""
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s[3:]
+        if s.endswith("```"):
+            s = s[: -3]
+        s = s.strip()
+    return s
+
+
 async def collect_batch_results(
     client: anthropic.AsyncAnthropic, batch_id: str
 ) -> list[BatchItemResult]:
@@ -733,6 +739,7 @@ async def collect_batch_results(
         if result.result.type == "succeeded":
             msg = result.result.message
             text = next((b.text for b in msg.content if b.type == "text"), "")
+            text = _strip_code_fences(text)
             try:
                 parsed = json.loads(text)
             except json.JSONDecodeError as e:

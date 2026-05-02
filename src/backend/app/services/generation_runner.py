@@ -552,7 +552,6 @@ async def _step(
 
     if job.status == "awaiting_datasets":
         if job.dataset_batch_id is None:
-            # Lost the batch reference somehow — fall back to resubmit.
             _set_status(conn, job.id, "submitting_datasets")
             return
         status = await batch_processing_status(client, job.dataset_batch_id)
@@ -563,29 +562,44 @@ async def _step(
             )
             return
         results = await collect_batch_results(client, job.dataset_batch_id)
-        # Map custom_id "dataset-<idx>" → idx
+        succeeded = 0
+        errors: list[str] = []
         for item in results:
             try:
                 idx = int(item.custom_id.split("-", 1)[1])
             except (ValueError, IndexError):
+                errors.append(f"bad custom_id: {item.custom_id}")
                 continue
             if item.parsed is None:
-                # Skip — will fall through; the next "submitting_datasets"
-                # tick will retry only the missing ones.
+                err = item.error or "unknown error"
+                errors.append(f"item {idx}: {err}")
+                log.warning(
+                    "dataset batch item failed idx=%d err=%s job=%s",
+                    idx, err, job.id,
+                )
                 continue
             title = str(item.parsed.get("title") or f"Dataset {idx}")[:200]
             content = str(item.parsed.get("content") or "")
             _insert_dataset(conn, project_id, idx, title, content)
             _bump(conn, job.id, "datasets_done")
-        # If anything is still missing (errored items), loop back to submit.
+            succeeded += 1
+        # Fail-fast: if zero items succeeded in this batch, the failure is
+        # systematic (bad params, schema mismatch, permission, etc.).
+        # Resubmitting will produce identical errors. Abort the job with
+        # the first error message so the user sees the real cause.
+        if succeeded == 0 and results:
+            sample = errors[0] if errors else "all items failed without detail"
+            raise RuntimeError(
+                f"dataset batch returned {len(results)} failures; first error: {sample}"
+            )
         still_missing = [
             i for i in range(1, DATASET_COUNT + 1)
             if i not in _existing_dataset_indices(conn, project_id)
         ]
         if still_missing:
             log.info(
-                "dataset batch had %d failures, resubmitting job=%s",
-                len(still_missing), job.id,
+                "dataset batch: %d succeeded, %d still missing — resubmitting job=%s",
+                succeeded, len(still_missing), job.id,
             )
             _update(
                 conn, job.id,
@@ -671,19 +685,33 @@ async def _step(
             )
             return
         results = await collect_batch_results(client, job.run_batch_id)
+        succeeded = 0
+        errors: list[str] = []
         for item in results:
-            # custom_id format: "run-<idx>-<dataset_uuid>"
             try:
                 _, _idx_str, dataset_id = item.custom_id.split("-", 2)
                 dataset_uuid = UUID(dataset_id)
             except (ValueError, IndexError):
+                errors.append(f"bad custom_id: {item.custom_id}")
                 continue
             _insert_run(
                 conn, project_id, job.prompt_id, dataset_uuid, item,
             )
             if item.parsed is not None and item.error is None:
                 _bump(conn, job.id, "runs_done")
-        # Any successful runs missing? If so loop submit_runs to retry.
+                succeeded += 1
+            else:
+                err = item.error or "unknown error"
+                errors.append(f"item {dataset_id}: {err}")
+                log.warning(
+                    "run batch item failed dataset=%s err=%s job=%s",
+                    dataset_id, err, job.id,
+                )
+        if succeeded == 0 and results:
+            sample = errors[0] if errors else "all items failed without detail"
+            raise RuntimeError(
+                f"run batch returned {len(results)} failures; first error: {sample}"
+            )
         still_missing = [
             r for r in _datasets_full(conn, project_id)
             if r["idx"] not in _existing_run_dataset_idxs(
@@ -692,8 +720,8 @@ async def _step(
         ]
         if still_missing:
             log.info(
-                "run batch had %d failures, resubmitting job=%s",
-                len(still_missing), job.id,
+                "run batch: %d succeeded, %d still missing — resubmitting job=%s",
+                succeeded, len(still_missing), job.id,
             )
             _update(
                 conn, job.id,

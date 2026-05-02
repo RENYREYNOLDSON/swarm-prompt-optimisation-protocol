@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 from typing import Any
 
 import numpy as np
 from sklearn.decomposition import PCA
+
+logger = logging.getLogger("spop.layout")
 
 EMBED_DIM_FALLBACK = 256
 EMBED_MODEL = "voyage-3-lite"
@@ -38,12 +41,15 @@ def _get_voyage_client():
     if _voyage_client is not None:
         return _voyage_client
     if not os.environ.get("VOYAGE_API_KEY"):
+        logger.debug("voyage embeddings disabled (no VOYAGE_API_KEY) — using hash fallback")
         return None
     try:
         import voyageai  # type: ignore[import-not-found]
     except ImportError:
+        logger.warning("voyageai package not installed — using hash fallback")
         return None
     _voyage_client = voyageai.AsyncClient()
+    logger.info("voyage embeddings enabled (model=%s)", EMBED_MODEL)
     return _voyage_client
 
 
@@ -76,9 +82,10 @@ async def embed_prompt(system_text: str, user_template: str) -> list[float]:
                 texts=[text], model=EMBED_MODEL, input_type="document"
             )
             return list(result.embeddings[0])
-        except Exception:
-            # Fall back silently — the swarm shouldn't fail on embed errors.
-            pass
+        except Exception as e:
+            # Fall back silently — the swarm shouldn't fail on embed errors —
+            # but at least surface the cause so we can debug rate limits etc.
+            logger.warning("voyage embed failed (%s) — using hash fallback", e)
     # Hash-trick fallback (or thread-pool isn't needed; it's pure Python).
     return await asyncio.to_thread(_hash_embed, text)
 
